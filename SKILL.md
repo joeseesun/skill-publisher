@@ -45,6 +45,16 @@ python3 ~/.claude/skills/skill-publisher/scripts/publish_skill.py <skill_dir>
 | `--dry-run` | 仅检查，不实际发布 |
 | `--skip-verify` | 跳过 npx skills 验证 |
 | `--github-user USER` | 指定 GitHub 用户名（默认自动获取） |
+| `--no-symlink` | 跳过创建 `~/.agents/skills/` symlink |
+
+### 自动创建 ~/.agents/skills/ Symlink
+
+发布成功后，脚本自动在 `~/.agents/skills/<name>` 创建指向 skill 目录的 symlink。
+
+这个目录是通用 Agent Skills 标准目录，以下工具会自动读取：
+OpenCode、Codex CLI、Cursor、Gemini CLI、GitHub Copilot、Amp、Cline、Warp 等。
+
+一次发布，多工具共享，无需重复配置。
 
 ### ⚠️ SKILL.md YAML 安全规则（发布前必查）
 

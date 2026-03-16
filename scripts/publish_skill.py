@@ -356,6 +356,33 @@ def verify_skill(github_user, name):
     return False, f"skill 名称 '{name}' 未出现在输出中"
 
 
+def create_agent_symlink(skill_dir, name):
+    """Create/update a symlink in ~/.agents/skills/<name> pointing to the skill directory.
+
+    ~/.agents/skills/ is the universal skills directory recognized by Codex, OpenCode,
+    Cursor, Gemini CLI, GitHub Copilot, Amp, Cline, and more.
+
+    Returns: ("created" | "updated" | "skipped", message)
+    """
+    agents_dir = os.path.expanduser("~/.agents/skills")
+    os.makedirs(agents_dir, exist_ok=True)
+    link_path = os.path.join(agents_dir, name)
+    target = os.path.abspath(skill_dir)
+
+    if os.path.islink(link_path):
+        current = os.readlink(link_path)
+        if current == target:
+            return "skipped", f"symlink 已存在且指向正确: {link_path}"
+        os.unlink(link_path)
+        os.symlink(target, link_path)
+        return "updated", f"{link_path} → {target}"
+    elif os.path.exists(link_path):
+        return "skipped", f"~/.agents/skills/{name} 已存在且不是 symlink，跳过（请手动处理）"
+    else:
+        os.symlink(target, link_path)
+        return "created", f"{link_path} → {target}"
+
+
 def main():
     parser = argparse.ArgumentParser(description="发布 Claude Code Skill 到 GitHub")
     parser.add_argument("skill_dir", help="Skill 目录路径")
@@ -363,6 +390,7 @@ def main():
     parser.add_argument("--private", action="store_true", help="创建私有仓库 (默认公开)")
     parser.add_argument("--dry-run", action="store_true", help="仅检查，不实际发布")
     parser.add_argument("--skip-verify", action="store_true", help="跳过 npx skills 验证")
+    parser.add_argument("--no-symlink", action="store_true", help="跳过创建 ~/.agents/skills/ symlink")
     args = parser.parse_args()
 
     skill_dir = os.path.abspath(args.skill_dir)
@@ -433,6 +461,16 @@ def main():
         else:
             print(f"❌ 验证失败: {verify_err}", file=sys.stderr)
             print("   请检查 SKILL.md frontmatter，修复后重新运行脚本更新", file=sys.stderr)
+
+    # Step 8: Create ~/.agents/skills/ symlink
+    if not args.no_symlink:
+        status, msg = create_agent_symlink(skill_dir, name)
+        if status == "created":
+            print(f"\n🔗 已创建 Agent symlink: {msg}")
+        elif status == "updated":
+            print(f"\n🔗 已更新 Agent symlink: {msg}")
+        else:
+            print(f"\nℹ️  Agent symlink: {msg}")
 
     # Summary
     print(f"\n{'='*60}")
