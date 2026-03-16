@@ -47,33 +47,56 @@ def check_prerequisites():
 
 
 def parse_yaml_frontmatter(skill_md_path):
-    """Extract name and description from SKILL.md YAML frontmatter."""
+    """Extract name and description from SKILL.md YAML frontmatter.
+
+    Returns (name, desc, yaml_error). yaml_error is None if parsing succeeded.
+    Uses pyyaml for strict validation (same parser family as npx skills CLI).
+    Falls back to regex if pyyaml is unavailable.
+    """
     with open(skill_md_path, "r") as f:
         content = f.read()
     m = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
     if not m:
-        return None, None
+        return None, None, "找不到 YAML frontmatter（需要 --- ... --- 包裹）"
     yaml_block = m.group(1)
+
+    try:
+        import yaml
+        try:
+            data = yaml.safe_load(yaml_block)
+        except yaml.YAMLError as e:
+            err_line = str(e).split("\n")[0]
+            return None, None, (
+                f"YAML 语法错误: {err_line}\n"
+                "   常见原因: description 含未转义的引号或特殊字符\n"
+                "   修复方法: 改用 | 块标量格式:\n"
+                "     description: |\n"
+                "       描述文字，可随意包含 \"引号\"、'单引号'、冒号: 等"
+            )
+        if not isinstance(data, dict):
+            return None, None, "frontmatter 解析结果不是 dict"
+        name = data.get("name")
+        desc = data.get("description")
+        if isinstance(desc, str):
+            desc = " ".join(desc.split())  # normalize whitespace
+        return name, desc, None
+
+    except ImportError:
+        pass  # pyyaml not installed, fall back to regex
+
+    # Regex fallback (less strict, may miss YAML errors)
     name_m = re.search(r"^name:\s*(.+)$", yaml_block, re.MULTILINE)
     name = name_m.group(1).strip().strip("'\"") if name_m else None
-
-    # Extract description - handle multiple YAML formats:
-    # 1. description: "single line"
-    # 2. description: |
-    #      multi-line indented text
-    # 3. description: >
-    #      folded text
     desc = None
     desc_m = re.search(r"^description:\s*[|>]\s*\n((?:[ \t]+.+\n?)+)", yaml_block, re.MULTILINE)
     if desc_m:
-        # Multi-line: strip leading whitespace from each line and join
         lines = desc_m.group(1).split("\n")
         desc = " ".join(line.strip() for line in lines if line.strip())
     else:
         desc_m = re.search(r"^description:\s*(.+)$", yaml_block, re.MULTILINE)
         if desc_m:
             desc = desc_m.group(1).strip().strip("'\"")
-    return name, desc
+    return name, desc, None
 
 
 def get_github_user():
@@ -89,7 +112,10 @@ def validate_skill(skill_dir):
         errors.append("缺少 SKILL.md")
         return errors, None, None
 
-    name, desc = parse_yaml_frontmatter(skill_md)
+    name, desc, yaml_error = parse_yaml_frontmatter(skill_md)
+    if yaml_error:
+        errors.append(yaml_error)
+        return errors, None, None
     if not name:
         errors.append("SKILL.md 缺少 YAML frontmatter 中的 name 字段")
     if not desc:
@@ -135,6 +161,61 @@ SOFTWARE.
     return True
 
 
+def extract_user_facing_sections(body):
+    """
+    Extract user-facing sections from SKILL.md body.
+    Skips AI-only sections like output formatting rules, internal rules, etc.
+
+    AI-only sections to skip (case-insensitive patterns):
+    - "Output Formatting Rules"
+    - Lines starting with "Rule:" or "**Rule:"
+    - Sections about internal AI behavior
+
+    User-facing sections to keep:
+    - Quick Examples / 快速示例 / 示例
+    - Commands / 命令
+    - Usage / 使用方法
+    - Features / 功能
+    - 支持的平台 / Supported sites
+    """
+    AI_SECTION_PATTERNS = [
+        r"output formatting rules",
+        r"requirements",  # usually "Chrome open with..." which IS user-facing, keep it
+    ]
+    # Actually let's keep requirements — it's important for users.
+    # Only skip pure AI-instruction sections:
+    SKIP_SECTION_TITLES = {
+        "output formatting rules",
+        "output formatting",
+        "formatting rules",
+    }
+
+    lines = body.split("\n")
+    result_lines = []
+    skip_section = False
+    current_h2 = ""
+
+    for line in lines:
+        # Detect h2/h3 headings
+        h2_match = re.match(r"^##\s+(.+)$", line)
+        if h2_match:
+            current_h2 = h2_match.group(1).strip().lower()
+            skip_section = current_h2 in SKIP_SECTION_TITLES
+            if skip_section:
+                continue
+
+        # Skip lines starting with "Rule:" (AI-facing rules)
+        if re.match(r"^\*?\*?Rule:", line):
+            continue
+
+        if skip_section:
+            continue
+
+        result_lines.append(line)
+
+    return "\n".join(result_lines).strip()
+
+
 def generate_readme(skill_dir, name, desc, github_user):
     """Generate README.md from SKILL.md content."""
     readme_path = os.path.join(skill_dir, "README.md")
@@ -145,18 +226,22 @@ def generate_readme(skill_dir, name, desc, github_user):
     skill_md = os.path.join(skill_dir, "SKILL.md")
     with open(skill_md, "r") as f:
         content = f.read()
-    body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, flags=re.DOTALL).strip()
+    raw_body = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, flags=re.DOTALL).strip()
 
-    # Extract first heading or use name
-    first_heading = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
-    title = first_heading.group(1) if first_heading else name
+    # Extract user-facing content (strip AI-only sections)
+    user_body = extract_user_facing_sections(raw_body)
 
-    # Build short desc (first line of description)
-    short_desc = desc.split("。")[0] + "。" if "。" in desc else desc[:100]
+    # Build tagline from description (first sentence)
+    if "。" in desc:
+        tagline = desc.split("。")[0] + "。"
+    elif ". " in desc:
+        tagline = desc.split(". ")[0] + "."
+    else:
+        tagline = desc[:120]
 
     readme = f"""# {name}
 
-{short_desc}
+> {tagline}
 
 ## 安装
 
@@ -164,7 +249,23 @@ def generate_readme(skill_dir, name, desc, github_user):
 npx skills add {github_user}/{name}
 ```
 
-{body}
+## 前置要求
+
+<!-- TODO: 填写该 Skill 所需的前置条件（工具、账号、配置等） -->
+- Claude Code 已安装
+- （在此补充其他依赖）
+
+## 使用方式
+
+安装后，在 Claude Code 中用自然语言描述你的需求即可，例如：
+
+<!-- TODO: 填写 2-3 个典型的自然语言触发示例 -->
+```
+"..."
+"..."
+```
+
+{user_body}
 
 ## License
 
@@ -172,7 +273,7 @@ MIT
 
 ## 📱 关注作者
 
-如果这个项目对你有帮助，欢迎关注我获取更多技术分享：
+如果这个项目对你有帮助，欢迎关注我获取更多 AI 工具分享：
 
 - **X (Twitter)**: [@vista8](https://x.com/vista8)
 - **微信公众号「向阳乔木推荐看」**:
@@ -237,11 +338,22 @@ def create_and_push(skill_dir, name, desc, github_user, public=True):
 
 
 def verify_skill(github_user, name):
-    """Verify skill is discoverable via npx skills."""
+    """Verify skill is installable via npx skills.
+
+    Note: --list only checks repo reachability, not YAML validity.
+    We parse the actual output to confirm the skill name was found AND parsed.
+    """
     result = run(f"npx skills add {github_user}/{name} --list 2>&1", check=False)
-    if result and name in result:
-        return True
-    return False
+    if not result:
+        return False, "npx skills 命令执行失败或超时"
+    # Must see both "Found N skill" and the skill name — confirms YAML was parsed OK
+    if "Found" in result and name in result:
+        return True, None
+    if "No valid skills found" in result:
+        return False, "YAML 解析失败（npx skills 找不到有效 skill）— 检查 SKILL.md frontmatter"
+    if name in result:
+        return True, None
+    return False, f"skill 名称 '{name}' 未出现在输出中"
 
 
 def main():
@@ -314,11 +426,13 @@ def main():
 
     # Step 7: Verify
     if not args.skip_verify:
-        print("\n🔎 验证 npx skills 可发现...")
-        if verify_skill(github_user, name):
-            print("✅ 验证通过")
+        print("\n🔎 验证 npx skills 可安装...")
+        ok, verify_err = verify_skill(github_user, name)
+        if ok:
+            print("✅ 验证通过（YAML 解析正常，可安装）")
         else:
-            print("⚠️  验证未通过（可能需要等待几秒后重试）")
+            print(f"❌ 验证失败: {verify_err}", file=sys.stderr)
+            print("   请检查 SKILL.md frontmatter，修复后重新运行脚本更新", file=sys.stderr)
 
     # Summary
     print(f"\n{'='*60}")

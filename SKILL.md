@@ -46,6 +46,25 @@ python3 ~/.claude/skills/skill-publisher/scripts/publish_skill.py <skill_dir>
 | `--skip-verify` | 跳过 npx skills 验证 |
 | `--github-user USER` | 指定 GitHub 用户名（默认自动获取） |
 
+### ⚠️ SKILL.md YAML 安全规则（发布前必查）
+
+`npx skills` 使用严格 YAML 解析器，以下写法会导致安装失败（报 "No valid skills found"）：
+
+| ❌ 错误写法 | ✅ 正确写法 |
+|-----------|-----------|
+| `description: 含有 "引号" 的文字` | 改用 `\|` 块标量（见下方） |
+| `description: 含单引号'的文字` | 改用 `\|` 块标量 |
+| `description: 含冒号: 的文字` | 改用 `\|` 块标量 |
+
+**最安全的 description 写法**：
+```yaml
+description: |
+  描述放这里，可以随意包含 "双引号"、'单引号'、冒号: 等特殊字符
+  触发词: 用户说...时触发
+```
+
+脚本已内置 YAML 严格校验（pyyaml），会在发布前捕获这类错误并给出修复提示。
+
 ### 更新已发布的 skill
 
 对已有 GitHub 仓库的 skill 再次运行同一命令，脚本会检测到仓库已存在，自动 commit + push 更新。
